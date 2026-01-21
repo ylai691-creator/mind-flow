@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MindFlow 思流 - 雲端版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .loading-dots:after { content: '.'; animation: dots 1s steps(5, end) infinite; }
+        @keyframes dots { 0%, 20% { content: '.'; } 40% { content: '..'; } 60% { content: '...'; } 80%, 100% { content: ''; } }
+    </style>
+</head>
+<body class="bg-slate-50">
+    <div id="app">
+        <!-- 初始讀取畫面 -->
+        <div id="loading-screen" class="h-screen flex flex-col items-center justify-center text-indigo-600">
+            <div class="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+            <p class="font-black text-xl">正在連線至雲端資料庫<span class="loading-dots"></span></p>
+            <div id="error-display" class="mt-4 text-red-500 font-bold hidden px-6 text-center"></div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
+        import { getFirestore, doc, setDoc, collection, onSnapshot, updateDoc, arrayUnion, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
+
+        // ⚠️ 這是您剛才提供的 Config，我已幫您格式化
+        const firebaseConfig = {
+            apiKey: "AIzaSyB-dw3SqNJREm0O6V6R4dGvPUfPG4cn_cc",
+            authDomain: "mindlow-v2.firebaseapp.com",
+            projectId: "mindlow-v2",
+            storageBucket: "mindlow-v2.firebasestorage.app",
+            messagingSenderId: "939889674400",
+            appId: "1:939889674400:web:2f3b8ad5ef4fc0bc5961c5"
+        };
+
+        let db, auth, appId, currentUser;
+        let userData = { wallet: 0, ownedCourses: [] };
+        let allCourses = [];
+        let activeTab = 'home';
+
+        function showError(msg) {
+            const errDiv = document.getElementById('error-display');
+            errDiv.innerText = msg;
+            errDiv.classList.remove('hidden');
+            document.querySelector('.animate-spin').classList.add('hidden');
+        }
+
+        try {
+            const app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+            appId = firebaseConfig.projectId;
+
+            // 啟動登入
+            signInAnonymously(auth).catch(err => {
+                showError("【驗證失敗】請至 Firebase 控制台開啟 Anonymous Authentication (匿名登入)。錯誤代碼：" + err.code);
+            });
+
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    currentUser = user;
+                    startDataSync();
+                }
+            });
+
+        } catch (e) {
+            showError("【配置錯誤】請檢查 Firebase Config 是否複製完整。");
+        }
+
+        function startDataSync() {
+            // 同步個人資料
+            const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data');
+            onSnapshot(userRef, (snap) => {
+                if (snap.exists()) {
+                    userData = snap.data();
+                } else {
+                    const freshData = { wallet: 5000, ownedCourses: [] };
+                    setDoc(userRef, freshData);
+                    userData = freshData;
+                }
+                render();
+            }, (err) => {
+                showError("【讀取失敗】請確認 Firestore 的 Rules (規則) 已正確設定並發布。");
+            });
+
+            // 同步市場課程
+            const marketRef = collection(db, 'artifacts', appId, 'public', 'data', 'courses');
+            onSnapshot(marketRef, (snap) => {
+                allCourses = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                render();
+            });
+        }
+
+        function render() {
+            const root = document.getElementById('app');
+            root.innerHTML = `
+                <div class="flex min-h-screen">
+                    <!-- 側邊欄 -->
+                    <aside class="w-64 bg-white border-r h-screen sticky top-0 p-8 flex flex-col">
+                        <div class="text-2xl font-black text-indigo-600 mb-10 italic">MindFlow</div>
+                        <nav class="space-y-2 flex-1">
+                            ${['home', 'learn', 'create'].map(tab => `
+                                <button onclick="window.setTab('${tab}')" class="w-full text-left p-4 rounded-2xl font-bold transition-all ${activeTab===tab?'bg-indigo-600 text-white shadow-lg shadow-indigo-200':'text-slate-400 hover:bg-slate-50'}">
+                                    ${tab==='home'?'探索市場':tab==='learn'?'我的學習':'發布教材'}
+                                </button>
+                            `).join('')}
+                        </nav>
+                        <div class="bg-slate-900 p-6 rounded-[2rem] text-white">
+                            <p class="text-[10px] font-black uppercase opacity-50 mb-1">我的資產</p>
+                            <h3 class="text-2xl font-black">$${userData.wallet}</h3>
+                        </div>
+                    </aside>
+                    <!-- 主內容 -->
+                    <main class="flex-1 p-12 overflow-y-auto">
+                        ${renderContent()}
+                    </main>
+                </div>
+            `;
+        }
+
+        function renderContent() {
+            if (activeTab === 'home') {
+                return `
+                    <h2 class="text-4xl font-black text-slate-800 mb-8">知識市場</h2>
+                    <div class="grid grid-cols-2 gap-8">
+                        ${allCourses.length ? allCourses.map(c => `
+                            <div class="bg-white p-6 rounded-[2.5rem] border border-slate-100 shadow-sm hover:shadow-md transition-all">
+                                <h4 class="text-xl font-black mb-4">${c.title}</h4>
+                                <div class="flex justify-between items-center pt-4 border-t">
+                                    <span class="text-2xl font-black text-slate-900">$${c.price}</span>
+                                    ${userData.ownedCourses.includes(c.id) ? 
+                                        `<span class="text-emerald-500 font-black">已購入</span>` :
+                                        `<button onclick="window.buy('${c.id}')" class="px-6 py-2 bg-indigo-600 text-white rounded-xl font-black hover:bg-indigo-700">購買</button>`}
+                                </div>
+                            </div>
+                        `).join('') : '<p class="col-span-2 text-slate-300 font-bold py-20 text-center">目前還沒有教材，點擊「發布」來上架第一個吧！</p>'}
+                    </div>
+                `;
+            }
+            if (activeTab === 'create') {
+                return `
+                    <div class="max-w-md mx-auto bg-white p-10 rounded-[3rem] shadow-xl border">
+                        <h2 class="text-2xl font-black mb-6">發布教材</h2>
+                        <input id="cTitle" placeholder="標題" class="w-full p-4 bg-slate-50 rounded-2xl mb-4 font-bold outline-none border focus:border-indigo-600">
+                        <input id="cPrice" type="number" placeholder="售價" class="w-full p-4 bg-slate-50 rounded-2xl mb-6 font-bold outline-none border focus:border-indigo-600">
+                        <button onclick="window.publish()" class="w-full bg-indigo-600 text-white py-4 rounded-2xl font-black text-lg shadow-lg">確認上架</button>
+                    </div>
+                `;
+            }
+            if (activeTab === 'learn') {
+                const myItems = allCourses.filter(c => userData.ownedCourses.includes(c.id));
+                return `
+                    <h2 class="text-3xl font-black mb-8">我的學習庫</h2>
+                    <div class="space-y-4">
+                        ${myItems.map(c => `
+                            <div class="bg-white p-6 rounded-2xl border flex justify-between items-center">
+                                <span class="font-bold">${c.title}</span>
+                                <span class="text-indigo-600 font-black">開始學習 →</span>
+                            </div>
+                        `).join('') || '<p class="text-slate-300 font-bold">目前無教材</p>'}
+                    </div>
+                `;
+            }
+        }
+
+        // 全域控制
+        window.setTab = (t) => { activeTab = t; render(); };
+        window.publish = async () => {
+            const title = document.getElementById('cTitle').value;
+            const price = Number(document.getElementById('cPrice').value);
+            if(!title || !price) return alert("請填寫內容");
+            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'courses'), {
+                title, price, creatorId: currentUser.uid, createdAt: serverTimestamp()
+            });
+            alert("上架成功！");
+            window.setTab('home');
+        };
+        window.buy = async (id) => {
+            const course = allCourses.find(c => c.id === id);
+            if(userData.wallet < course.price) return alert("餘額不足");
+            const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data');
+            await updateDoc(userRef, {
+                wallet: userData.wallet - course.price,
+                ownedCourses: arrayUnion(id)
+            });
+            alert("購買成功！");
+        };
+    </script>
+</body>
+</html>
